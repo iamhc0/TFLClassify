@@ -19,35 +19,35 @@ package org.tensorflow.lite.examples.classification
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
+import android.view.View
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Observer
-import androidx.recyclerview.widget.RecyclerView
-import org.tensorflow.lite.examples.classification.ml.FlowerModel
+import org.tensorflow.lite.examples.classification.databinding.ActivityMainBinding
+import org.tensorflow.lite.examples.classification.ml.InsectModel
 import org.tensorflow.lite.examples.classification.ui.RecognitionAdapter
 import org.tensorflow.lite.examples.classification.util.YuvToRgbConverter
 import org.tensorflow.lite.examples.classification.viewmodel.Recognition
 import org.tensorflow.lite.examples.classification.viewmodel.RecognitionListViewModel
+import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.model.Model
+import java.io.IOException
 import java.util.concurrent.Executors
-import org.tensorflow.lite.gpu.CompatibilityList
 
 // Constants
 private const val MAX_RESULT_DISPLAY = 3 // Maximum number of results displayed
@@ -56,7 +56,7 @@ private const val REQUEST_CODE_PERMISSIONS = 999 // Return code after asking for
 private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA) // permission needed
 
 // Listener for the result of the ImageAnalyzer
-typealias RecognitionListener = (recognition: List<Recognition>) -> Unit
+typealias RecognitionListener = (bitmap: Bitmap) -> Unit
 
 /**
  * Main entry point into TensorFlow Lite Classifier
@@ -69,47 +69,60 @@ class MainActivity : AppCompatActivity() {
     private lateinit var camera: Camera
     private val cameraExecutor = Executors.newSingleThreadExecutor()
 
-    // Views attachment
-    private val resultRecyclerView by lazy {
-        findViewById<RecyclerView>(R.id.recognitionResults) // Display the result of analysis
-    }
-    private val viewFinder by lazy {
-        findViewById<PreviewView>(R.id.viewFinder) // Display the preview image from Camera
-    }
+
+    // View Binding
+    private var binding: ActivityMainBinding? = null
 
     // Contains the recognition result. Since  it is a viewModel, it will survive screen rotations
     private val recogViewModel: RecognitionListViewModel by viewModels()
 
+    private val activity: MainActivity = this
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding?.root)
+        binding?.init()
+    }
 
+
+    fun ActivityMainBinding.init() {
         // Request camera permissions
         if (allPermissionsGranted()) {
             startCamera()
         } else {
             ActivityCompat.requestPermissions(
-                this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
+                activity, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
             )
         }
 
         // Initialising the resultRecyclerView and its linked viewAdaptor
-        val viewAdapter = RecognitionAdapter(this)
-        resultRecyclerView.adapter = viewAdapter
+        val viewAdapter = RecognitionAdapter(activity)
+        recognitionResults.adapter = viewAdapter
 
         // Disable recycler view animation to reduce flickering, otherwise items can move, fade in
         // and out as the list change
-        resultRecyclerView.itemAnimator = null
+        recognitionResults.itemAnimator = null
 
         // Attach an observer on the LiveData field of recognitionList
         // This will notify the recycler view to update every time when a new list is set on the
         // LiveData field of recognitionList.
-        recogViewModel.recognitionList.observe(this,
-            Observer {
-                viewAdapter.submitList(it)
-            }
-        )
+        recogViewModel.recognitionList.observe(activity, Observer {
+            viewAdapter.submitList(it)
+        })
 
+
+        galleryTV.setOnClickListener {
+            val intent = Intent()
+            intent.type = "image/*"
+            intent.action = Intent.ACTION_GET_CONTENT
+            startActivityForResult(Intent.createChooser(intent, "Select Picture"), 12)
+        }
+
+        cameraTV.setOnClickListener {
+            selectionLayout.visibility = View.GONE
+            viewFinder.visibility = View.VISIBLE
+        }
     }
 
     /**
@@ -125,9 +138,7 @@ class MainActivity : AppCompatActivity() {
      * This gets called after the Camera permission pop up is shown.
      */
     override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<String>,
-        grantResults: IntArray
+        requestCode: Int, permissions: Array<String>, grantResults: IntArray
     ) {
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
@@ -138,9 +149,7 @@ class MainActivity : AppCompatActivity() {
                 // scope in this sample. More details:
                 // https://developer.android.com/training/permissions/usage-notes
                 Toast.makeText(
-                    this,
-                    getString(R.string.permission_deny_text),
-                    Toast.LENGTH_SHORT
+                    this, getString(R.string.permission_deny_text), Toast.LENGTH_SHORT
                 ).show()
                 finish()
             }
@@ -162,8 +171,7 @@ class MainActivity : AppCompatActivity() {
             // Used to bind the lifecycle of cameras to the lifecycle owner
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
-            preview = Preview.Builder()
-                .build()
+            preview = Preview.Builder().build()
 
             imageAnalyzer = ImageAnalysis.Builder()
                 // This sets the ideal size for the image to be analyse, CameraX will choose the
@@ -173,19 +181,17 @@ class MainActivity : AppCompatActivity() {
                 // How the Image Analyser should pipe in input, 1. every frame but drop no frame, or
                 // 2. go to the latest frame and may drop some frame. The default is 2.
                 // STRATEGY_KEEP_ONLY_LATEST. The following line is optional, kept here for clarity
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
                 .also { analysisUseCase: ImageAnalysis ->
-                    analysisUseCase.setAnalyzer(cameraExecutor, ImageAnalyzer(this) { items ->
+                    analysisUseCase.setAnalyzer(cameraExecutor, ImageAnalyzer(this) { bitmap ->
                         // updating the list of recognised objects
-                        recogViewModel.updateData(items)
+                        setResultToRecyclerView(activity, bitmap)
                     })
                 }
 
             // Select camera, back is the default. If it is not available, choose front camera
             val cameraSelector =
-                if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA))
-                    CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+                if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
 
             try {
                 // Unbind use cases before rebinding
@@ -198,7 +204,10 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 // Attach the preview to preview view, aka View Finder
-                preview.setSurfaceProvider(viewFinder.surfaceProvider)
+                binding?.viewFinder?.run {
+                    preview.setSurfaceProvider(surfaceProvider)
+                }
+
             } catch (exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
             }
@@ -206,56 +215,14 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+
     private class ImageAnalyzer(ctx: Context, private val listener: RecognitionListener) :
         ImageAnalysis.Analyzer {
 
-        // TODO 1: Add class variable TensorFlow Lite Model
-        // Initializing the flowerModel by lazy so that it runs in the same thread when the process
-        // method is called.
-        private val flowerModel: FlowerModel by lazy{
-
-            // TODO 6. Optional GPU acceleration
-            val compatList = CompatibilityList()
-
-            val options = if(compatList.isDelegateSupportedOnThisDevice) {
-                Log.d(TAG, "This device is GPU Compatible ")
-                Model.Options.Builder().setDevice(Model.Device.GPU).build()
-            } else {
-                Log.d(TAG, "This device is GPU Incompatible ")
-                Model.Options.Builder().setNumThreads(4).build()
-            }
-
-            // Initialize the Flower Model
-            FlowerModel.newInstance(ctx, options)
-        }
 
         override fun analyze(imageProxy: ImageProxy) {
 
-            val items = mutableListOf<Recognition>()
-
-            // TODO 2: Convert Image to Bitmap then to TensorImage
-            val tfImage = TensorImage.fromBitmap(toBitmap(imageProxy))
-
-            // TODO 3: Process the image using the trained model, sort and pick out the top results
-            val outputs = flowerModel.process(tfImage)
-                .probabilityAsCategoryList.apply {
-                    sortByDescending { it.score } // Sort with highest confidence first
-                }.take(MAX_RESULT_DISPLAY) // take the top results
-
-            // TODO 4: Converting the top probability items into a list of recognitions
-            for (output in outputs) {
-                items.add(Recognition(output.label, output.score))
-            }
-
-//            // START - Placeholder code at the start of the codelab. Comment this block of code out.
-//            for (i in 0 until MAX_RESULT_DISPLAY){
-//                items.add(Recognition("Fake label $i", Random.nextFloat()))
-//            }
-//            // END - Placeholder code at the start of the codelab. Comment this block of code out.
-
-            // Return the result
-            listener(items.toList())
-
+            toBitmap(imageProxy)?.let { listener(it) }
             // Close the image,this tells CameraX to feed the next image to the analyzer
             imageProxy.close()
         }
@@ -288,16 +255,95 @@ class MainActivity : AppCompatActivity() {
 
             // Create the Bitmap in the correct orientation
             return Bitmap.createBitmap(
-                bitmapBuffer,
-                0,
-                0,
-                bitmapBuffer.width,
-                bitmapBuffer.height,
-                rotationMatrix,
-                false
+                bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height, rotationMatrix, false
             )
         }
 
     }
+
+    private var bitmap: Bitmap? = null
+    private var imageuri: Uri? = null
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 12 && resultCode == RESULT_OK && data != null) {
+            imageuri = data.data
+            try {
+                bitmap = MediaStore.Images.Media.getBitmap(contentResolver, imageuri)
+                bitmap?.let {
+                    setResultToRecyclerView(activity, it)
+                }
+
+            } catch (e: IOException) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun setResultToRecyclerView(
+        context: Context, bitmap: Bitmap
+    ) {
+        // TODO 1: Add class variable TensorFlow Lite Model
+        // Initializing the flowerModel by lazy so that it runs in the same thread when the process
+        // method is called.
+        val flowerModel: InsectModel by lazy {
+
+            // TODO 6. Optional GPU acceleration
+            val compatList = CompatibilityList()
+
+            val options = if (compatList.isDelegateSupportedOnThisDevice) {
+                Log.d(TAG, "This device is GPU Compatible ")
+                Model.Options.Builder().setDevice(Model.Device.GPU).build()
+            } else {
+                Log.d(TAG, "This device is GPU Incompatible ")
+                Model.Options.Builder().setNumThreads(4).build()
+            }
+
+            // Initialize the Flower Model
+            InsectModel.newInstance(context, options)
+        }
+        val items = mutableListOf<Recognition>()
+
+        // TODO 2: Convert Image to Bitmap then to TensorImage
+        val tfImage = TensorImage.fromBitmap(bitmap)
+
+        // TODO 3: Process the image using the trained model, sort and pick out the top results
+        val outputs = flowerModel.process(tfImage).probabilityAsCategoryList.apply {
+            sortByDescending { it.score } // Sort with highest confidence first
+        }.take(MAX_RESULT_DISPLAY) // take the top results
+        Log.d(TAG, "outputs: $outputs")
+        // TODO 4: Converting the top probability items into a list of recognitions
+        for (output in outputs) {
+            items.add(Recognition(output.label, output.score))
+        }
+
+
+        //            // START - Placeholder code at the start of the codelab. Comment this block of code out.
+//            for (i in 0 until MAX_RESULT_DISPLAY){
+//                items.add(Recognition("Fake label $i", Random.nextFloat()))
+//            }
+//            // END - Placeholder code at the start of the codelab. Comment this block of code out.
+
+        // Set the result
+        recogViewModel.updateData(items.toList())
+
+    }
+
+
+    override fun onBackPressed() {
+
+        binding?.run {
+            if (viewFinder.visibility == View.VISIBLE) {
+                selectionLayout.visibility = View.VISIBLE
+                viewFinder.visibility = View.GONE
+
+            } else {
+                super.onBackPressed()
+            }
+
+        }
+
+
+    }
+
 
 }
