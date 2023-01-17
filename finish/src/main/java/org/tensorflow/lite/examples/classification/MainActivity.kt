@@ -38,6 +38,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Observer
 import org.tensorflow.lite.examples.classification.databinding.ActivityMainBinding
+import org.tensorflow.lite.examples.classification.ml.FlowerModelMyMTLiteMaker104
 import org.tensorflow.lite.examples.classification.ml.InsectModel
 import org.tensorflow.lite.examples.classification.ui.RecognitionAdapter
 import org.tensorflow.lite.examples.classification.util.YuvToRgbConverter
@@ -292,7 +293,7 @@ class MainActivity : AppCompatActivity() {
             // TODO 1: Add class variable TensorFlow Lite Model
             // Initializing the flowerModel by lazy so that it runs in the same thread when the process
             // method is called.
-            val flowerModel: InsectModel by lazy {
+            val flowerModel: FlowerModelMyMTLiteMaker104 by lazy {
 
                 // TODO 6. Optional GPU acceleration
                 val compatList = CompatibilityList()
@@ -306,7 +307,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 // Initialize the Flower Model
-                InsectModel.newInstance(context, options)
+                FlowerModelMyMTLiteMaker104.newInstance(context, options)
             }
             val items = mutableListOf<Recognition>()
 
